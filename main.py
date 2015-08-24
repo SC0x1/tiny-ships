@@ -1,96 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from framework import *
+# from framework import *
+from boids_system import *
 import math
 import time
-
-g_is_key_up = False
-
-
-class BoidsSystem:
-    def __init__(self):
-        self._boids = {}
-        self._obstacles = []
-        self._num_active_boids = 0
-
-    def add_boid(self, boid):
-        if boid:
-            self._boids[boid.name] = boid
-            return True
-        return False
-
-    def add_obstacle(self, obstacle):
-        if obstacle:
-            self._obstacles.append(obstacle)
-
-    def update(self, keys):
-        flagship = self._boids.get("flag_ship", None)
-        if flagship:
-            flagship.update(keys)
-
-            if 'flight' in keys:
-                global g_is_key_up
-                if g_is_key_up:
-                    for plane in self._boids.itervalues():
-                        if isinstance(plane, ScoutPlane):
-                            if not plane.takeoff:
-                                self._num_active_boids += 1
-                                plane.flight()
-                                g_is_key_up = False
-                                break
-
-            for boid in self._boids.itervalues():
-                if isinstance(boid, ScoutPlane):
-                    boid.update(self._boids, self._obstacles, flagship)
-
-'''
-    Obstacles
-'''
-class ObstacleLine:
-    def __init__(self, loc1, loc2):
-        self._loc1 = loc1.copy()
-        self._loc2 = loc2.copy()
-        loc1 += loc2
-        self._centroid = loc1.copy()
-        self._centroid /= 2
-
-    def centroid(self):
-        return self._centroid
-
-    def closest_point(self, pos):
-        diffx = self._loc2.x - self._loc1.x
-        diffy = self._loc2.y - self._loc1.y
-        u = ((pos.x - self._loc1.x)*diffx + (pos.y - self._loc1.y)*diffy) / (diffx*diffx + diffy*diffy)
-        u = max(min(u, 1), 0)
-        return b2Vec2(self._loc1.x + u * diffx, self._loc1.y + u * diffy)
-
-
-class ObstaclePoint:
-    def __init__(self, loc):
-        self._location = b2Vec2(loc)
-
-    def centroid(self):
-        return self._location
-
-    def closest_point(self, pos):
-        return self._location
-
-
-class ObstacleCircle:
-    def __init__(self, loc, radius):
-        self._location = b2Vec2(loc)
-        self._radius = radius
-
-    def centroid(self):
-        return self._location
-
-    def closest_point(self, pos):
-        radial = pos - self._location
-        radial.Normalize()
-        radial *= self._radius
-        radial += self._location
-        return radial
 
 
 class BaseDynamicEntity(object):
@@ -152,6 +66,8 @@ class ScoutPlane(BaseDynamicEntity):
 
     MAX_FUEL = 30
 
+    NUM_ACTIVE_PLANES = 0
+
     def __init__(self, name, world, vertices=None, density=0.1, position=(0, 0)):
         if vertices is None:
             vertices = ScoutPlane.vertices
@@ -165,7 +81,6 @@ class ScoutPlane(BaseDynamicEntity):
         self._try_landing = False
         self._time_start = 0
         self._acceleration = b2Vec2(0, 0)
-        self.base_position = b2Vec2(0, 0)
 
     @property
     def takeoff(self):
@@ -176,12 +91,14 @@ class ScoutPlane(BaseDynamicEntity):
             self._time_start = time.time()
             time.clock()
             self._state_takeoff = True
+            self.NUM_ACTIVE_PLANES += 1
 
     def landing(self):
         self._state_takeoff = False
         self._state_landing = False
         self._time_start = 0
         self._acceleration = b2Vec2(0, 0)
+        self.NUM_ACTIVE_PLANES -= 1
 
     def update_linear(self, acceleration):
         self.body.ApplyLinearImpulse(acceleration, self.position, True)
@@ -200,134 +117,14 @@ class ScoutPlane(BaseDynamicEntity):
             fuel = 0
         return fuel
 
-    def flock(self, boids, obstacles):
-        separation = self.separate(boids)
-        align = self.align(boids)
-        cohesion = self.cohesion(boids)
-        avd = self.avoid(obstacles, 100)
-
-        avd *= 10
-        separation *= 1.5
-        align *= 1.0
-        cohesion *= 1.1
-
-        return separation + align + cohesion + avd
-
-    def seek(self, target):
-        desired = target - self.position
-        if desired.length == 0:
-            return b2Vec2(0, 0)
-
-        desired.Normalize()
-        desired *= self.LINEAR_SPEED
-
-        steer = desired - self.linear_velocity
-
-        if steer.length > self.MAX_IMPULSE:
-            steer.Normalize()
-            steer *= self.MAX_IMPULSE
-        return steer
-
-    def steer(self, target):
-        force = b2Vec2(0, 0)
-        desired = target - self.position
-        distance = desired.length
-
-        if distance > 0:
-            desired.Normalize()
-            if distance < 100.0:
-                desired *= 0.05
-            else:
-                desired *= self.LINEAR_SPEED
-
-            force = desired - self.linear_velocity
-            if force.length > self.MAX_IMPULSE:
-                force.Normalize()
-                force *= self.MAX_IMPULSE
-        return force
-
-    def separate(self, neighbours, separation=2500):
-        steer = b2Vec2(0, 0)
-        count = 0
-        for boid in neighbours.itervalues():
-            distance = b2DistanceSquared(self.position, boid.position)
-            '''if isinstance(boid, FlagShip):
-                separation = 300'''
-            if (distance > 0) and (distance < separation):
-                diff = self.position - boid.position
-                diff.Normalize()
-                diff *= 1.0/distance
-                steer += diff
-                count += 1
-
-        if count > 0:
-            steer *= 1.0/count
-
-        if steer.length > 0:
-            steer.Normalize()
-            steer *= self.LINEAR_SPEED
-            steer -= self.linear_velocity
-            if steer.length > self.MAX_IMPULSE:
-                steer.Normalize()
-                steer *= self.MAX_IMPULSE
-        return steer
-
-    def align(self, neighbours, neighbordist=10000):
-        steer = b2Vec2(0, 0)
-        count = 0
-
-        for boid in neighbours.itervalues():
-            distance = b2DistanceSquared(self.position, boid.position)
-            if (distance > 0) and (distance < neighbordist):
-                steer += boid.linear_velocity
-                count += 1
-
-        if count > 0:
-            steer *= 1.0/count
-
-        if steer.length > 0:
-            steer.Normalize()
-            steer *= self.LINEAR_SPEED
-            steer -= self.linear_velocity
-            if steer.length > self.MAX_IMPULSE:
-                steer.Normalize()
-                steer *= self.MAX_IMPULSE
-        return steer
-
-    def cohesion(self, neighbours, neighbordist=100000):
-        sum = b2Vec2(0, 0)
-        count = 0
-        for boid in neighbours.itervalues():
-            distance = b2DistanceSquared(self.position, boid.position)
-            if (distance > 0) and (distance < neighbordist):
-                sum += boid.position
-                count += 1
-
-        if count > 0:
-            sum *= 1.0/count
-            return self.seek(sum)
-        else:
-            return b2Vec2(0, 0)
-
-    def avoid(self, obstacles, radius):
-        avd = b2Vec2(0, 0)
-        for ob in obstacles:
-            distance = b2DistanceSquared(self.position, ob.centroid())
-            if distance < 3000:
-                closest = ob.closest_point(self.position)
-                if b2DistanceSquared(self.position, closest) <= radius:
-                    force = self.seek(closest)
-                    force *= -1.0
-                    force *= self.MAX_IMPULSE
-                    avd += force
-        return avd
-
-    def update(self, boids, obstacles, flagship):
+    def update(self, boids_system, flagship):
         acceleration = b2Vec2(0, 0)
         if self.takeoff:
             if self.get_fuel() > 29:
                 acceleration = self.body.GetWorldVector((0, 1))
                 acceleration *= 3
+            # elif self.get_fuel() == 0:
+            #    pass  # plane crashed ?
             elif self.get_fuel() < 15:
                 runway_length = 75
                 shipdirection = flagship.world_vector((0, 1))
@@ -360,9 +157,9 @@ class ScoutPlane(BaseDynamicEntity):
                     # if the plane is outside the runway radius seek the target
                     if distance_outside > radius:
                         #target = normal_loc + runway_diff
-                        acceleration = self.seek(normal_loc)
+                        acceleration = boids_system.seek(self, normal_loc)
                     else:
-                        acceleration = self.seek(flagship.world_centre)
+                        acceleration = boids_system.seek(self, flagship.world_centre)
 
                     distance = b2DistanceSquared(flagship.world_centre, self.world_centre)
 
@@ -377,16 +174,19 @@ class ScoutPlane(BaseDynamicEntity):
                         # something went wrong, so we'll just trying again
                         self._state_landing = False
                 else:
-                    acceleration = self.seek(runway_start)
-                    acceleration += self.separate(boids, 100)
+                    acceleration = boids_system.seek(self, runway_start)
+                    acceleration += boids_system.separate(self, 100)
                     if b2DistanceSquared(runway_start, self.position) < 5:
                         self._try_landing = False
                         self._state_landing = True
                         acceleration *= -1.0
-            elif self.get_fuel() == 0:
-                pass  # plane crashed ?
             else:
-                acceleration = self.flock(boids, obstacles)
+                if self.NUM_ACTIVE_PLANES == 1:
+                    acceleration = self.body.GetWorldVector((0, 1))
+                    acceleration *= 3
+                    acceleration += boids_system.flock(self)
+                else:
+                    acceleration = boids_system.flock(self)
         else:
             self.position = flagship.world_centre
             self.angle = flagship.angle
@@ -459,6 +259,7 @@ class ShipGame(Framework):
 
         # Keep track of the pressed keys
         self.pressed_keys = set()
+        self._is_key_up = False
         self._boidssystem = BoidsSystem()
 
         # The walls
@@ -490,12 +291,14 @@ class ShipGame(Framework):
         self._boidssystem.add_obstacle(ObstacleLine(b2Vec2( 220, 220), b2Vec2( 220,-220)))
         self._boidssystem.add_obstacle(ObstacleLine(b2Vec2(-220, 220), b2Vec2(-220,-220)))
 
-        for b in [ScoutPlane('scout_'+str(i), self.world) for i in range(5)]:
-            self._boidssystem.add_boid(b)
+        self._planes = [ScoutPlane('scout_' + str(i), self.world) for i in range(5)]
+        for plane in self._planes:
+            self._boidssystem.add_boid(plane)
+        self._num_active_panes = 0
 
-        self.ship1 = FlagShip('flag_ship', self.world)
+        self._flag_ship = FlagShip('flag_ship', self.world)
 
-        self._boidssystem.add_boid(self.ship1)
+        self._boidssystem.add_boid(self._flag_ship)
 
     def Keyboard(self, key):
         key_map = self.key_map
@@ -505,8 +308,7 @@ class ShipGame(Framework):
             super(ShipGame, self).Keyboard(key)
 
     def KeyboardUp(self, key):
-        global g_is_key_up
-        g_is_key_up = True
+        self._is_key_up = True
         key_map = self.key_map
         if key in key_map:
             self.pressed_keys.remove(key_map[key])
@@ -514,10 +316,22 @@ class ShipGame(Framework):
             super(ShipGame, self).KeyboardUp(key)
 
     def Step(self, settings):
-        self._boidssystem.update(self.pressed_keys)
+
+        self._flag_ship.update(self.pressed_keys)
+
+        if 'flight' in self.pressed_keys:
+            if self._is_key_up:
+                for plane in self._planes:
+                    if not plane.takeoff:
+                        plane.flight()
+                        self._is_key_up = False
+                        break
+
+        for plane in self._planes:
+            plane.update(self._boidssystem, self._flag_ship)
 
         super(ShipGame, self).Step(settings)
-        self.Print('Linear speed sqr: %s' % self.ship1.linear_speed_sqr)
+        self.Print('Linear speed sqr: %s' % self._flag_ship.linear_speed_sqr)
         time.sleep(0.001)
 
 if __name__ == "__main__":
